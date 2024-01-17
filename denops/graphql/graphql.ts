@@ -63,24 +63,48 @@ export function getEndpoint(
   );
 }
 
+async function getSelectedQuery(
+  denops: Denops,
+  query: string[],
+): Promise<string> {
+  await denops.call("cursor", ".", "999");
+
+  await denops.call(
+    "search",
+    "\\v^(query|mutation)\\s\\w+\\s?",
+    "be",
+  );
+
+  await denops.call("cursor", ".", "999");
+  const start = await denops.call("line", ".") as number;
+  const end = await denops.call("searchpair", "{", "", "}", "n") as number;
+
+  return query.slice(start - 1, end).filter((line) => !line.includes("#")).join(
+    "\n",
+  );
+}
+
 export async function execute(denops: Denops): Promise<void> {
   if (await denops.eval("&ft") !== "graphql") {
     throw new Error(`file type is not 'graphql'`);
   }
+
   const queryBufName = await denops.call("bufname") as string;
+
   const query = await denops.call(
     "getbufline",
     queryBufName,
     1,
     "$",
   ) as string[];
+
   const endpoint = getEndpoint(query, queryBufName);
 
   const respBufName = `${queryBufName}.output.json`;
   await openRespBuffer(denops, respBufName);
-
   const variableBufName = `${queryBufName}.variables.json`;
   let variables = "";
+
   if (await denops.call("bufexists", variableBufName)) {
     await openVariableBuffer(denops, variableBufName);
     variables = (await denops.call(
@@ -96,7 +120,9 @@ export async function execute(denops: Denops): Promise<void> {
     "Content-Type": "application/json",
   };
 
-  if (await hasConfig()) {
+  const isHaveConfig = await hasConfig();
+
+  if (isHaveConfig) {
     const httpConfigs = await readConfig();
     for (const config of httpConfigs) {
       if (endpoint === config.endpoint) {
@@ -105,12 +131,14 @@ export async function execute(denops: Denops): Promise<void> {
     }
   }
 
+  const selectedQuery = await getSelectedQuery(denops, query);
   console.log("executing...");
+
   const resp = await fetch(endpoint, {
     method: "POST",
     headers: headers,
     body: JSON.stringify({
-      query: query.join("\n"),
+      query: selectedQuery,
       variables: variables ? JSON.parse(variables) : null,
     }),
   });
@@ -120,6 +148,7 @@ export async function execute(denops: Denops): Promise<void> {
   }
 
   const body = JSON.stringify(await resp.json(), null, "  ");
+
   await denops.batch(
     ["deletebufline", respBufName, 1, "$"],
     ["setbufline", respBufName, 1, body.split("\n")],
